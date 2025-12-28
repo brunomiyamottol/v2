@@ -9,7 +9,41 @@ const pool = new Pool({
 
 export { pool };
 
-export function buildInsurerFilter(insurerKey: number | null): { where: string; params: any[] } {
+export interface FilterParams {
+  where: string;
+  params: any[];
+}
+
+export function buildFilters(insurerKey: number | null, startDate?: string, endDate?: string): FilterParams {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let paramIndex = 1;
+
+  if (insurerKey) {
+    conditions.push(`f.insurer_key = $${paramIndex}`);
+    params.push(insurerKey);
+    paramIndex++;
+  }
+
+  if (startDate) {
+    conditions.push(`od.full_date >= $${paramIndex}`);
+    params.push(startDate);
+    paramIndex++;
+  }
+
+  if (endDate) {
+    conditions.push(`od.full_date <= $${paramIndex}`);
+    params.push(endDate);
+    paramIndex++;
+  }
+
+  return {
+    where: conditions.length > 0 ? ' AND ' + conditions.join(' AND ') : '',
+    params,
+  };
+}
+
+export function buildInsurerFilter(insurerKey: number | null): FilterParams {
   if (insurerKey) {
     return { where: ' AND f.insurer_key = $1', params: [insurerKey] };
   }

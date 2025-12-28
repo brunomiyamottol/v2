@@ -1,6 +1,7 @@
 /**
- * XNuuP Dashboard - Multi-Page Implementation
- * Dashboard + Parts Analytics + Supplier Analytics + Performance Analytics
+ * XNuuP Dashboard v2.3
+ * Dashboard + Parts Analytics + Supplier Analytics + Performance + Workshops
+ * With date filtering and authentication
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -13,7 +14,12 @@ import {
 // Types
 // ============================================================================
 
-type Page = 'dashboard' | 'parts' | 'suppliers' | 'performance';
+type Page = 'dashboard' | 'parts' | 'suppliers' | 'performance' | 'workshops';
+
+interface DateRange {
+  startDate: string;
+  endDate: string;
+}
 
 interface Insurer {
   insurer_key: number;
@@ -336,6 +342,62 @@ interface PerformanceData {
   pending_parts: PendingPart[];
 }
 
+// Workshop Analytics Types
+interface WorkshopRanking {
+  workshop_name: string;
+  workshop_location: string;
+  total_claims: number;
+  total_orders: number;
+  total_value: number;
+  delivery_rate: number;
+  cancel_rate: number;
+  avg_parts_per_claim: number;
+  unique_insurers: number;
+  unique_suppliers: number;
+}
+
+interface WorkshopByInsurer {
+  workshop_name: string;
+  insurer_name: string;
+  total_claims: number;
+  total_orders: number;
+  total_value: number;
+  delivery_rate: number;
+}
+
+interface WorkshopPartTypes {
+  workshop_name: string;
+  top_part_type: string;
+  order_count: number;
+  total_value: number;
+  pct_of_orders: number;
+}
+
+interface WorkshopDelivery {
+  workshop_name: string;
+  total_orders: number;
+  avg_delivery_days: number | null;
+  on_time_count: number;
+  late_count: number;
+  on_time_rate: number | null;
+}
+
+interface WorkshopTrend {
+  month: string;
+  workshop_name: string;
+  order_count: number;
+  total_value: number;
+}
+
+interface WorkshopsData {
+  generated_at: string;
+  ranking: WorkshopRanking[];
+  by_insurer: WorkshopByInsurer[];
+  part_types: WorkshopPartTypes[];
+  delivery_performance: WorkshopDelivery[];
+  monthly_trend: WorkshopTrend[];
+}
+
 interface ApiResponse<T> {
   success: boolean;
   data: T | null;
@@ -348,6 +410,7 @@ interface ApiResponse<T> {
 
 const REFRESH_INTERVAL = 60;
 const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+const AUTH_KEY = 'xnuup_auth';
 
 const formatNumber = (n: number | null | undefined): string => {
   if (n == null || isNaN(n)) return '0';
@@ -374,6 +437,16 @@ const truncate = (s: string | null | undefined, len: number): string => {
   return s.length > len ? s.slice(0, len) + '...' : s;
 };
 
+const getDefaultDateRange = (): DateRange => {
+  const end = new Date();
+  const start = new Date();
+  start.setMonth(start.getMonth() - 3);
+  return {
+    startDate: start.toISOString().split('T')[0],
+    endDate: end.toISOString().split('T')[0],
+  };
+};
+
 // ============================================================================
 // Reusable Components
 // ============================================================================
@@ -397,6 +470,66 @@ const SectionTitle: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 );
 
 // ============================================================================
+// Login Component
+// ============================================================================
+
+const LoginPage: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json();
+      
+      if (data.success) {
+        localStorage.setItem(AUTH_KEY, data.token);
+        onLogin();
+      } else {
+        setError('Invalid password');
+      }
+    } catch {
+      setError('Authentication failed');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+      <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+        <h1 className="text-2xl font-bold text-gray-900 mb-6 text-center">XNuuP Dashboard</h1>
+        <form onSubmit={handleSubmit}>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Enter password"
+              autoFocus
+            />
+          </div>
+          {error && <p className="text-red-600 text-sm mb-4">{error}</p>}
+          <button
+            type="submit"
+            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition-colors"
+          >
+            Login
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
 // Navigation Component
 // ============================================================================
 
@@ -406,18 +539,22 @@ const Navigation: React.FC<{
   insurers: Insurer[];
   selectedInsurer: number | null;
   onInsurerChange: (key: number | null) => void;
+  dateRange: DateRange;
+  onDateChange: (range: DateRange) => void;
   lastUpdated: Date | null;
   countdown: number;
   onRefresh: () => void;
+  onLogout: () => void;
   loading: boolean;
 }> = ({
   currentPage, onNavigate, insurers, selectedInsurer, onInsurerChange,
-  lastUpdated, countdown, onRefresh, loading
+  dateRange, onDateChange, lastUpdated, countdown, onRefresh, onLogout, loading
 }) => {
   const navItems: { key: Page; label: string }[] = [
     { key: 'dashboard', label: 'Dashboard' },
-    { key: 'parts', label: 'Parts Analytics' },
-    { key: 'suppliers', label: 'Supplier Analytics' },
+    { key: 'parts', label: 'Parts' },
+    { key: 'suppliers', label: 'Suppliers' },
+    { key: 'workshops', label: 'Workshops' },
     { key: 'performance', label: 'Performance' },
   ];
 
@@ -447,22 +584,34 @@ const Navigation: React.FC<{
 
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-600">From:</label>
+                <input
+                  type="date"
+                  value={dateRange.startDate}
+                  onChange={(e) => onDateChange({ ...dateRange, startDate: e.target.value })}
+                  className="border border-gray-300 rounded px-2 py-1 text-sm"
+                />
+                <label className="text-sm text-gray-600">To:</label>
+                <input
+                  type="date"
+                  value={dateRange.endDate}
+                  onChange={(e) => onDateChange({ ...dateRange, endDate: e.target.value })}
+                  className="border border-gray-300 rounded px-2 py-1 text-sm"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
                 <label className="text-sm text-gray-600">Insurer:</label>
                 <select
                   value={selectedInsurer || ''}
                   onChange={(e) => onInsurerChange(e.target.value ? parseInt(e.target.value, 10) : null)}
-                  className="border border-gray-300 rounded px-2 py-1 text-sm min-w-[180px]"
+                  className="border border-gray-300 rounded px-2 py-1 text-sm min-w-[150px]"
                 >
                   <option value="">All Insurers</option>
                   {insurers.map((i) => (
                     <option key={i.insurer_key} value={i.insurer_key}>{i.insurer_name}</option>
                   ))}
                 </select>
-                {selectedInsurer && (
-                  <button onClick={() => onInsurerChange(null)} className="text-sm text-blue-600 hover:text-blue-800">
-                    Clear
-                  </button>
-                )}
               </div>
 
               <div className="text-right text-sm">
@@ -476,6 +625,13 @@ const Navigation: React.FC<{
                 className="px-3 py-1 text-sm border rounded hover:bg-gray-50 disabled:opacity-50"
               >
                 {loading ? 'Loading...' : 'Refresh'}
+              </button>
+
+              <button
+                onClick={onLogout}
+                className="px-3 py-1 text-sm border border-red-300 text-red-600 rounded hover:bg-red-50"
+              >
+                Logout
               </button>
             </div>
           </div>
@@ -712,7 +868,6 @@ const PartsAnalyticsPage: React.FC<{ data: PartsAnalyticsData | null; loading: b
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow p-4">
           <SectionTitle>Price Variance Analysis</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Parts with highest price variation</p>
           <div className="overflow-x-auto max-h-96">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-white"><tr className="border-b">
@@ -739,7 +894,6 @@ const PartsAnalyticsPage: React.FC<{ data: PartsAnalyticsData | null; loading: b
 
         <div className="bg-white rounded-lg shadow p-4">
           <SectionTitle>High Cancellation Parts</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Parts with highest cancellation rates</p>
           <div className="overflow-x-auto max-h-96">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-white"><tr className="border-b">
@@ -762,40 +916,6 @@ const PartsAnalyticsPage: React.FC<{ data: PartsAnalyticsData | null; loading: b
               </tbody>
             </table>
           </div>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-lg shadow p-4">
-        <SectionTitle>Part Type Details</SectionTitle>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead><tr className="border-b">
-              <th className="text-left py-2 px-2">Type</th>
-              <th className="text-right py-2 px-2">Orders</th>
-              <th className="text-right py-2 px-2">Parts</th>
-              <th className="text-right py-2 px-2">Avg Price</th>
-              <th className="text-right py-2 px-2">Min</th>
-              <th className="text-right py-2 px-2">Max</th>
-              <th className="text-right py-2 px-2">Delivery %</th>
-              <th className="text-right py-2 px-2">Cancel %</th>
-              <th className="text-right py-2 px-2">Value</th>
-            </tr></thead>
-            <tbody>
-              {data.part_types.map((pt, i) => (
-                <tr key={i} className="border-b hover:bg-gray-50">
-                  <td className="py-2 px-2">{pt.part_type}</td>
-                  <td className="text-right py-2 px-2">{formatNumber(pt.order_count)}</td>
-                  <td className="text-right py-2 px-2">{formatNumber(pt.unique_parts)}</td>
-                  <td className="text-right py-2 px-2">{formatCurrency(pt.avg_price)}</td>
-                  <td className="text-right py-2 px-2">{formatCurrency(pt.min_price)}</td>
-                  <td className="text-right py-2 px-2">{formatCurrency(pt.max_price)}</td>
-                  <td className="text-right py-2 px-2">{formatPercent(pt.delivery_rate)}</td>
-                  <td className="text-right py-2 px-2">{formatPercent(pt.cancel_rate)}</td>
-                  <td className="text-right py-2 px-2">{formatCurrency(pt.total_value)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
@@ -824,25 +944,6 @@ const SupplierAnalyticsPage: React.FC<{ data: SupplierAnalyticsData | null; load
       </section>
 
       <div className="bg-white rounded-lg shadow p-4">
-        <SectionTitle>Supplier Performance Overview</SectionTitle>
-        {data.ranking.length > 0 ? (
-          <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={data.ranking.slice(0, 10)} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis type="category" dataKey="supplier_name" width={150} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={(v: number, name: string) => name.includes('rate') ? formatPercent(v) : formatNumber(v)} />
-                <Legend />
-                <Bar dataKey="delivery_rate" fill="#22c55e" name="Delivery %" />
-                <Bar dataKey="cancel_rate" fill="#ef4444" name="Cancel %" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        ) : <p className="text-gray-500 text-center py-8">No data</p>}
-      </div>
-
-      <div className="bg-white rounded-lg shadow p-4">
         <SectionTitle>Supplier Rankings</SectionTitle>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -850,21 +951,17 @@ const SupplierAnalyticsPage: React.FC<{ data: SupplierAnalyticsData | null; load
               <th className="text-left py-2 px-2">Supplier</th>
               <th className="text-right py-2 px-2">Score</th>
               <th className="text-right py-2 px-2">Orders</th>
-              <th className="text-right py-2 px-2">Claims</th>
-              <th className="text-right py-2 px-2">Parts</th>
               <th className="text-right py-2 px-2">Delivery %</th>
               <th className="text-right py-2 px-2">Cancel %</th>
               <th className="text-right py-2 px-2">Avg Days</th>
               <th className="text-right py-2 px-2">Value</th>
             </tr></thead>
             <tbody>
-              {data.ranking.map((s, i) => (
+              {data.ranking.slice(0, 15).map((s, i) => (
                 <tr key={i} className="border-b hover:bg-gray-50">
                   <td className="py-2 px-2">{truncate(s.supplier_name, 25)}</td>
                   <td className="text-right py-2 px-2">{s.supplier_score?.toFixed(1) ?? '-'}</td>
                   <td className="text-right py-2 px-2">{formatNumber(s.total_orders)}</td>
-                  <td className="text-right py-2 px-2">{formatNumber(s.unique_claims)}</td>
-                  <td className="text-right py-2 px-2">{formatNumber(s.unique_parts)}</td>
                   <td className="text-right py-2 px-2">{formatPercent(s.delivery_rate)}</td>
                   <td className="text-right py-2 px-2">{formatPercent(s.cancel_rate)}</td>
                   <td className="text-right py-2 px-2">{s.avg_delivery_days?.toFixed(1) ?? '-'}</td>
@@ -878,40 +975,11 @@ const SupplierAnalyticsPage: React.FC<{ data: SupplierAnalyticsData | null; load
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <div className="bg-white rounded-lg shadow p-4">
-          <SectionTitle>Delivery Time Analysis</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Fastest delivering suppliers</p>
-          <div className="overflow-x-auto max-h-96">
-            <table className="min-w-full text-sm">
-              <thead className="sticky top-0 bg-white"><tr className="border-b">
-                <th className="text-left py-2 px-2">Supplier</th>
-                <th className="text-right py-2 px-2">Avg Days</th>
-                <th className="text-right py-2 px-2">Median</th>
-                <th className="text-right py-2 px-2">Same Day</th>
-                <th className="text-right py-2 px-2">≤3 Days</th>
-              </tr></thead>
-              <tbody>
-                {data.delivery_analysis.map((s, i) => (
-                  <tr key={i} className="border-b hover:bg-gray-50">
-                    <td className="py-2 px-2">{truncate(s.supplier_name, 20)}</td>
-                    <td className="text-right py-2 px-2">{s.avg_delivery_days?.toFixed(1) ?? '-'}</td>
-                    <td className="text-right py-2 px-2">{s.median_delivery_days?.toFixed(1) ?? '-'}</td>
-                    <td className="text-right py-2 px-2">{formatNumber(s.same_day_count)}</td>
-                    <td className="text-right py-2 px-2">{formatNumber(s.within_3_days)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow p-4">
           <SectionTitle>Price Competitiveness</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Supplier pricing vs market average</p>
           <div className="overflow-x-auto max-h-96">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-white"><tr className="border-b">
                 <th className="text-left py-2 px-2">Supplier</th>
-                <th className="text-right py-2 px-2">Parts</th>
                 <th className="text-right py-2 px-2">Supplier Avg</th>
                 <th className="text-right py-2 px-2">Market Avg</th>
                 <th className="text-right py-2 px-2">Diff %</th>
@@ -921,7 +989,6 @@ const SupplierAnalyticsPage: React.FC<{ data: SupplierAnalyticsData | null; load
                 {data.price_competitiveness.map((s, i) => (
                   <tr key={i} className="border-b hover:bg-gray-50">
                     <td className="py-2 px-2">{truncate(s.supplier_name, 18)}</td>
-                    <td className="text-right py-2 px-2">{formatNumber(s.compared_parts)}</td>
                     <td className="text-right py-2 px-2">{formatCurrency(s.avg_supplier_price)}</td>
                     <td className="text-right py-2 px-2">{formatCurrency(s.avg_market_price)}</td>
                     <td className={`text-right py-2 px-2 font-medium ${s.price_diff_pct < 0 ? 'text-green-600' : s.price_diff_pct > 0 ? 'text-red-600' : ''}`}>
@@ -940,37 +1007,9 @@ const SupplierAnalyticsPage: React.FC<{ data: SupplierAnalyticsData | null; load
             </table>
           </div>
         </div>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow p-4">
-          <SectionTitle>Supplier Specialization</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Top part type per supplier</p>
-          <div className="overflow-x-auto max-h-96">
-            <table className="min-w-full text-sm">
-              <thead className="sticky top-0 bg-white"><tr className="border-b">
-                <th className="text-left py-2 px-2">Supplier</th>
-                <th className="text-left py-2 px-2">Top Part Type</th>
-                <th className="text-right py-2 px-2">Orders</th>
-                <th className="text-right py-2 px-2">% of Total</th>
-              </tr></thead>
-              <tbody>
-                {data.specialization.map((s, i) => (
-                  <tr key={i} className="border-b hover:bg-gray-50">
-                    <td className="py-2 px-2">{truncate(s.supplier_name, 20)}</td>
-                    <td className="py-2 px-2">{truncate(s.top_part_type, 20)}</td>
-                    <td className="text-right py-2 px-2">{formatNumber(s.order_count)}</td>
-                    <td className="text-right py-2 px-2">{formatPercent(s.specialization_pct)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
 
         <div className="bg-white rounded-lg shadow p-4">
           <SectionTitle>High Cancellation Suppliers</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Suppliers with highest cancellation rates</p>
           <div className="overflow-x-auto max-h-96">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-white"><tr className="border-b">
@@ -1007,11 +1046,10 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
   if (loading || !data) return <Loading />;
 
   const { order_lifecycle, efficiency_metrics, delivery_distribution, supplier_delivery,
-          part_delivery_time, claim_cycle_time, part_type_delivery, pending_parts } = data;
+          part_delivery_time, claim_cycle_time, pending_parts } = data;
 
   return (
     <div className="space-y-6">
-      {/* KPI Cards - Order Lifecycle */}
       <section className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         <StatCard label="Avg Delivery Days" value={formatDays(order_lifecycle?.avg_delivered_days)} color="text-blue-600" />
         <StatCard label="On-Time Rate" value={formatPercent(order_lifecycle?.on_time_rate)} 
@@ -1022,15 +1060,6 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
         <StatCard label="Late Orders" value={formatNumber(order_lifecycle?.late_count)} color="text-red-600" />
       </section>
 
-      {/* Efficiency Metrics */}
-      <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Total Orders" value={formatNumber(efficiency_metrics?.total_orders)} />
-        <StatCard label="Auto-Assigned" value={formatNumber(efficiency_metrics?.auto_assigned)} subtext={formatPercent(efficiency_metrics?.auto_assign_rate)} />
-        <StatCard label="Supplier Cancels" value={formatNumber(efficiency_metrics?.supplier_cancels)} color="text-orange-600" />
-        <StatCard label="Insurer Reassigns" value={formatNumber(efficiency_metrics?.insurer_reassigns)} color="text-orange-600" />
-      </section>
-
-      {/* Delivery Time Distribution Chart */}
       <div className="bg-white rounded-lg shadow p-4">
         <SectionTitle>Delivery Time Distribution</SectionTitle>
         {delivery_distribution.length > 0 ? (
@@ -1040,8 +1069,7 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="delivery_bucket" />
                 <YAxis />
-                <Tooltip formatter={(v: number, name: string) => name === 'total_value' ? formatCurrency(v) : formatNumber(v)} />
-                <Legend />
+                <Tooltip formatter={(v: number) => formatNumber(v)} />
                 <Bar dataKey="order_count" fill="#3b82f6" name="Orders" />
               </BarChart>
             </ResponsiveContainer>
@@ -1050,10 +1078,8 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        {/* Supplier Delivery Performance */}
         <div className="bg-white rounded-lg shadow p-4">
           <SectionTitle>Supplier Delivery Performance</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Sorted by fastest average delivery</p>
           <div className="overflow-x-auto max-h-96">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-white"><tr className="border-b">
@@ -1061,9 +1087,6 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
                 <th className="text-right py-2 px-2">Orders</th>
                 <th className="text-right py-2 px-2">Avg Days</th>
                 <th className="text-right py-2 px-2">Same Day</th>
-                <th className="text-right py-2 px-2">1-3d</th>
-                <th className="text-right py-2 px-2">4-7d</th>
-                <th className="text-right py-2 px-2">&gt;7d</th>
                 <th className="text-right py-2 px-2">On-Time %</th>
               </tr></thead>
               <tbody>
@@ -1073,9 +1096,6 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
                     <td className="text-right py-2 px-2">{formatNumber(s.delivered_orders)}</td>
                     <td className="text-right py-2 px-2 font-medium">{formatDays(s.avg_delivery_days)}</td>
                     <td className="text-right py-2 px-2 text-green-600">{formatNumber(s.same_day)}</td>
-                    <td className="text-right py-2 px-2">{formatNumber(s.days_1_3)}</td>
-                    <td className="text-right py-2 px-2">{formatNumber(s.days_4_7)}</td>
-                    <td className="text-right py-2 px-2 text-red-600">{formatNumber(s.days_over_7)}</td>
                     <td className="text-right py-2 px-2">{formatPercent(s.on_time_rate)}</td>
                   </tr>
                 ))}
@@ -1084,31 +1104,25 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
           </div>
         </div>
 
-        {/* Part Type Delivery Time */}
         <div className="bg-white rounded-lg shadow p-4">
-          <SectionTitle>Part Type Delivery Time</SectionTitle>
-          <p className="text-sm text-gray-500 mb-3">Slowest part types</p>
+          <SectionTitle>Slowest Parts to Deliver</SectionTitle>
           <div className="overflow-x-auto max-h-96">
             <table className="min-w-full text-sm">
               <thead className="sticky top-0 bg-white"><tr className="border-b">
-                <th className="text-left py-2 px-2">Part Type</th>
+                <th className="text-left py-2 px-2">Part</th>
                 <th className="text-right py-2 px-2">Orders</th>
                 <th className="text-right py-2 px-2">Avg Days</th>
-                <th className="text-right py-2 px-2">Median</th>
-                <th className="text-right py-2 px-2">Fast ≤3d</th>
-                <th className="text-right py-2 px-2">Slow &gt;7d</th>
-                <th className="text-right py-2 px-2">Slow %</th>
+                <th className="text-right py-2 px-2">Delayed</th>
+                <th className="text-right py-2 px-2">Delay %</th>
               </tr></thead>
               <tbody>
-                {part_type_delivery.map((pt, i) => (
+                {part_delivery_time.map((p, i) => (
                   <tr key={i} className="border-b hover:bg-gray-50">
-                    <td className="py-2 px-2">{truncate(pt.part_type, 18)}</td>
-                    <td className="text-right py-2 px-2">{formatNumber(pt.total_orders)}</td>
-                    <td className="text-right py-2 px-2 font-medium">{formatDays(pt.avg_delivery_days)}</td>
-                    <td className="text-right py-2 px-2">{formatDays(pt.median_days)}</td>
-                    <td className="text-right py-2 px-2 text-green-600">{formatNumber(pt.fast_deliveries)}</td>
-                    <td className="text-right py-2 px-2 text-red-600">{formatNumber(pt.slow_deliveries)}</td>
-                    <td className="text-right py-2 px-2">{formatPercent(pt.slow_rate)}</td>
+                    <td className="py-2 px-2" title={p.part_name}>{truncate(p.part_name, 20)}</td>
+                    <td className="text-right py-2 px-2">{formatNumber(p.total_orders)}</td>
+                    <td className="text-right py-2 px-2 font-medium text-orange-600">{formatDays(p.avg_delivery_days)}</td>
+                    <td className="text-right py-2 px-2 text-red-600">{formatNumber(p.delayed_count)}</td>
+                    <td className="text-right py-2 px-2">{formatPercent(p.delay_rate)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1117,65 +1131,25 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
         </div>
       </div>
 
-      {/* Slowest Parts */}
-      <div className="bg-white rounded-lg shadow p-4">
-        <SectionTitle>Slowest Parts to Deliver</SectionTitle>
-        <p className="text-sm text-gray-500 mb-3">Parts with longest average delivery time</p>
-        <div className="overflow-x-auto max-h-96">
-          <table className="min-w-full text-sm">
-            <thead className="sticky top-0 bg-white"><tr className="border-b">
-              <th className="text-left py-2 px-2">Part</th>
-              <th className="text-left py-2 px-2">Type</th>
-              <th className="text-right py-2 px-2">Orders</th>
-              <th className="text-right py-2 px-2">Avg Days</th>
-              <th className="text-right py-2 px-2">Min</th>
-              <th className="text-right py-2 px-2">Max</th>
-              <th className="text-right py-2 px-2">Delayed &gt;7d</th>
-              <th className="text-right py-2 px-2">Delay %</th>
-            </tr></thead>
-            <tbody>
-              {part_delivery_time.map((p, i) => (
-                <tr key={i} className="border-b hover:bg-gray-50">
-                  <td className="py-2 px-2" title={p.part_name}>{truncate(p.part_name, 22)}</td>
-                  <td className="py-2 px-2">{truncate(p.part_type, 15)}</td>
-                  <td className="text-right py-2 px-2">{formatNumber(p.total_orders)}</td>
-                  <td className="text-right py-2 px-2 font-medium text-orange-600">{formatDays(p.avg_delivery_days)}</td>
-                  <td className="text-right py-2 px-2">{formatDays(p.min_days)}</td>
-                  <td className="text-right py-2 px-2">{formatDays(p.max_days)}</td>
-                  <td className="text-right py-2 px-2 text-red-600">{formatNumber(p.delayed_count)}</td>
-                  <td className="text-right py-2 px-2">{formatPercent(p.delay_rate)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Claim Cycle Time */}
       <div className="bg-white rounded-lg shadow p-4">
         <SectionTitle>Claim Cycle Time</SectionTitle>
-        <p className="text-sm text-gray-500 mb-3">Longest claim fulfillment cycles</p>
         <div className="overflow-x-auto max-h-96">
           <table className="min-w-full text-sm">
             <thead className="sticky top-0 bg-white"><tr className="border-b">
               <th className="text-left py-2 px-2">Claim</th>
               <th className="text-left py-2 px-2">Insurer</th>
               <th className="text-right py-2 px-2">Parts</th>
-              <th className="text-right py-2 px-2">Delivered</th>
               <th className="text-right py-2 px-2">Cycle Days</th>
-              <th className="text-right py-2 px-2">Avg Part Days</th>
               <th className="text-right py-2 px-2">Value</th>
               <th className="text-center py-2 px-2">Status</th>
             </tr></thead>
             <tbody>
-              {claim_cycle_time.map((c, i) => (
+              {claim_cycle_time.slice(0, 15).map((c, i) => (
                 <tr key={i} className="border-b hover:bg-gray-50">
                   <td className="py-2 px-2">{truncate(c.claim_number, 15)}</td>
                   <td className="py-2 px-2">{truncate(c.insurer_name, 15)}</td>
                   <td className="text-right py-2 px-2">{formatNumber(c.total_parts)}</td>
-                  <td className="text-right py-2 px-2">{formatNumber(c.delivered_parts)}</td>
                   <td className="text-right py-2 px-2 font-medium">{c.claim_cycle_days ?? '-'}</td>
-                  <td className="text-right py-2 px-2">{formatDays(c.avg_part_delivery_days)}</td>
                   <td className="text-right py-2 px-2">{formatCurrency(c.total_value)}</td>
                   <td className="text-center py-2 px-2">
                     <span className={`px-2 py-0.5 rounded text-xs ${
@@ -1191,18 +1165,14 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
         </div>
       </div>
 
-      {/* Pending Parts */}
       <div className="bg-white rounded-lg shadow p-4">
         <SectionTitle>Pending Parts - Past Deadline</SectionTitle>
-        <p className="text-sm text-gray-500 mb-3">Parts not yet delivered, sorted by days past deadline</p>
         <div className="overflow-x-auto max-h-96">
           <table className="min-w-full text-sm">
             <thead className="sticky top-0 bg-white"><tr className="border-b">
               <th className="text-left py-2 px-2">Claim</th>
               <th className="text-left py-2 px-2">Part</th>
               <th className="text-left py-2 px-2">Supplier</th>
-              <th className="text-left py-2 px-2">Status</th>
-              <th className="text-center py-2 px-2">Order Date</th>
               <th className="text-center py-2 px-2">Deadline</th>
               <th className="text-right py-2 px-2">Days Late</th>
               <th className="text-right py-2 px-2">Value</th>
@@ -1213,8 +1183,6 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
                   <td className="py-2 px-2">{truncate(p.claim_number, 12)}</td>
                   <td className="py-2 px-2" title={p.part_name}>{truncate(p.part_name, 18)}</td>
                   <td className="py-2 px-2">{truncate(p.supplier_name, 15)}</td>
-                  <td className="py-2 px-2">{truncate(p.status, 12)}</td>
-                  <td className="text-center py-2 px-2 text-xs">{p.order_date || '-'}</td>
                   <td className="text-center py-2 px-2 text-xs">{p.deadline_date || '-'}</td>
                   <td className={`text-right py-2 px-2 font-medium ${(p.days_past_deadline ?? 0) > 0 ? 'text-red-600' : ''}`}>
                     {p.days_past_deadline ?? '-'}
@@ -1231,13 +1199,175 @@ const PerformanceAnalyticsPage: React.FC<{ data: PerformanceData | null; loading
 };
 
 // ============================================================================
+// Workshops Analytics Page
+// ============================================================================
+
+const WorkshopsAnalyticsPage: React.FC<{ data: WorkshopsData | null; loading: boolean }> = ({ data, loading }) => {
+  if (loading || !data) return <Loading />;
+
+  return (
+    <div className="space-y-6">
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard label="Total Workshops" value={formatNumber(data.ranking.length)} color="text-blue-600" />
+        <StatCard label="Total Claims" 
+          value={formatNumber(data.ranking.reduce((a, b) => a + (b.total_claims || 0), 0))} />
+        <StatCard label="Total Value" 
+          value={formatCurrency(data.ranking.reduce((a, b) => a + (b.total_value || 0), 0))} 
+          color="text-green-600" />
+        <StatCard label="Avg Delivery Rate" 
+          value={formatPercent(data.ranking.reduce((a, b) => a + (b.delivery_rate || 0), 0) / Math.max(data.ranking.length, 1))} />
+      </section>
+
+      <div className="bg-white rounded-lg shadow p-4">
+        <SectionTitle>Workshop Performance Overview</SectionTitle>
+        {data.ranking.length > 0 ? (
+          <div className="h-80">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data.ranking.slice(0, 10)} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis type="number" />
+                <YAxis type="category" dataKey="workshop_name" width={150} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v: number, name: string) => 
+                  name.includes('rate') ? formatPercent(v) : 
+                  name.includes('value') ? formatCurrency(v) : formatNumber(v)} />
+                <Legend />
+                <Bar dataKey="total_claims" fill="#3b82f6" name="Claims" />
+                <Bar dataKey="total_orders" fill="#22c55e" name="Orders" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <p className="text-gray-500 text-center py-8">No data</p>}
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-4">
+        <SectionTitle>Workshop Rankings</SectionTitle>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead><tr className="border-b">
+              <th className="text-left py-2 px-2">Workshop</th>
+              <th className="text-left py-2 px-2">Location</th>
+              <th className="text-right py-2 px-2">Claims</th>
+              <th className="text-right py-2 px-2">Orders</th>
+              <th className="text-right py-2 px-2">Delivery %</th>
+              <th className="text-right py-2 px-2">Cancel %</th>
+              <th className="text-right py-2 px-2">Avg Parts</th>
+              <th className="text-right py-2 px-2">Insurers</th>
+              <th className="text-right py-2 px-2">Value</th>
+            </tr></thead>
+            <tbody>
+              {data.ranking.map((w, i) => (
+                <tr key={i} className="border-b hover:bg-gray-50">
+                  <td className="py-2 px-2">{truncate(w.workshop_name, 25)}</td>
+                  <td className="py-2 px-2">{truncate(w.workshop_location, 20)}</td>
+                  <td className="text-right py-2 px-2">{formatNumber(w.total_claims)}</td>
+                  <td className="text-right py-2 px-2">{formatNumber(w.total_orders)}</td>
+                  <td className="text-right py-2 px-2">{formatPercent(w.delivery_rate)}</td>
+                  <td className="text-right py-2 px-2">{formatPercent(w.cancel_rate)}</td>
+                  <td className="text-right py-2 px-2">{w.avg_parts_per_claim?.toFixed(1) ?? '-'}</td>
+                  <td className="text-right py-2 px-2">{formatNumber(w.unique_insurers)}</td>
+                  <td className="text-right py-2 px-2">{formatCurrency(w.total_value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="bg-white rounded-lg shadow p-4">
+          <SectionTitle>Workshop by Insurer</SectionTitle>
+          <div className="overflow-x-auto max-h-96">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-white"><tr className="border-b">
+                <th className="text-left py-2 px-2">Workshop</th>
+                <th className="text-left py-2 px-2">Insurer</th>
+                <th className="text-right py-2 px-2">Claims</th>
+                <th className="text-right py-2 px-2">Delivery %</th>
+                <th className="text-right py-2 px-2">Value</th>
+              </tr></thead>
+              <tbody>
+                {data.by_insurer.map((w, i) => (
+                  <tr key={i} className="border-b hover:bg-gray-50">
+                    <td className="py-2 px-2">{truncate(w.workshop_name, 18)}</td>
+                    <td className="py-2 px-2">{truncate(w.insurer_name, 15)}</td>
+                    <td className="text-right py-2 px-2">{formatNumber(w.total_claims)}</td>
+                    <td className="text-right py-2 px-2">{formatPercent(w.delivery_rate)}</td>
+                    <td className="text-right py-2 px-2">{formatCurrency(w.total_value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-4">
+          <SectionTitle>Workshop Delivery Performance</SectionTitle>
+          <div className="overflow-x-auto max-h-96">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-white"><tr className="border-b">
+                <th className="text-left py-2 px-2">Workshop</th>
+                <th className="text-right py-2 px-2">Orders</th>
+                <th className="text-right py-2 px-2">Avg Days</th>
+                <th className="text-right py-2 px-2">On-Time</th>
+                <th className="text-right py-2 px-2">Late</th>
+                <th className="text-right py-2 px-2">On-Time %</th>
+              </tr></thead>
+              <tbody>
+                {data.delivery_performance.map((w, i) => (
+                  <tr key={i} className="border-b hover:bg-gray-50">
+                    <td className="py-2 px-2">{truncate(w.workshop_name, 20)}</td>
+                    <td className="text-right py-2 px-2">{formatNumber(w.total_orders)}</td>
+                    <td className="text-right py-2 px-2">{formatDays(w.avg_delivery_days)}</td>
+                    <td className="text-right py-2 px-2 text-green-600">{formatNumber(w.on_time_count)}</td>
+                    <td className="text-right py-2 px-2 text-red-600">{formatNumber(w.late_count)}</td>
+                    <td className="text-right py-2 px-2">{formatPercent(w.on_time_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-4">
+        <SectionTitle>Workshop Part Type Specialization</SectionTitle>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead><tr className="border-b">
+              <th className="text-left py-2 px-2">Workshop</th>
+              <th className="text-left py-2 px-2">Top Part Type</th>
+              <th className="text-right py-2 px-2">Orders</th>
+              <th className="text-right py-2 px-2">% of Orders</th>
+              <th className="text-right py-2 px-2">Value</th>
+            </tr></thead>
+            <tbody>
+              {data.part_types.map((w, i) => (
+                <tr key={i} className="border-b hover:bg-gray-50">
+                  <td className="py-2 px-2">{truncate(w.workshop_name, 25)}</td>
+                  <td className="py-2 px-2">{truncate(w.top_part_type, 25)}</td>
+                  <td className="text-right py-2 px-2">{formatNumber(w.order_count)}</td>
+                  <td className="text-right py-2 px-2">{formatPercent(w.pct_of_orders)}</td>
+                  <td className="text-right py-2 px-2">{formatCurrency(w.total_value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
 // Main App Component
 // ============================================================================
 
 const App: React.FC = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
   const [insurers, setInsurers] = useState<Insurer[]>([]);
   const [selectedInsurer, setSelectedInsurer] = useState<number | null>(null);
+  const [dateRange, setDateRange] = useState<DateRange>(getDefaultDateRange());
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [countdown, setCountdown] = useState(REFRESH_INTERVAL);
   const [error, setError] = useState<string | null>(null);
@@ -1246,7 +1376,34 @@ const App: React.FC = () => {
   const [partsData, setPartsData] = useState<PartsAnalyticsData | null>(null);
   const [supplierData, setSupplierData] = useState<SupplierAnalyticsData | null>(null);
   const [performanceData, setPerformanceData] = useState<PerformanceData | null>(null);
+  const [workshopsData, setWorkshopsData] = useState<WorkshopsData | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Check auth on mount
+  useEffect(() => {
+    const token = localStorage.getItem(AUTH_KEY);
+    if (token) {
+      fetch('/api/auth', {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}` },
+      }).then(res => res.json())
+        .then(data => setIsAuthenticated(data.valid))
+        .catch(() => setIsAuthenticated(false));
+    }
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem(AUTH_KEY);
+    setIsAuthenticated(false);
+  };
+
+  const buildParams = () => {
+    const params = new URLSearchParams();
+    if (selectedInsurer) params.set('insurer', selectedInsurer.toString());
+    if (dateRange.startDate) params.set('startDate', dateRange.startDate);
+    if (dateRange.endDate) params.set('endDate', dateRange.endDate);
+    return params.toString();
+  };
 
   const fetchInsurers = useCallback(async () => {
     try {
@@ -1258,15 +1415,17 @@ const App: React.FC = () => {
 
   const fetchCurrentPage = useCallback(async () => {
     setLoading(true);
-    const filterParam = selectedInsurer ? `?insurer=${selectedInsurer}` : '';
+    const params = buildParams();
+    const queryString = params ? `?${params}` : '';
 
     try {
       let endpoint = '/api/dashboard';
       if (currentPage === 'parts') endpoint = '/api/analytics/parts';
       if (currentPage === 'suppliers') endpoint = '/api/analytics/suppliers';
       if (currentPage === 'performance') endpoint = '/api/analytics/performance';
+      if (currentPage === 'workshops') endpoint = '/api/analytics/workshops';
 
-      const res = await fetch(endpoint + filterParam);
+      const res = await fetch(endpoint + queryString);
       const json = await res.json();
 
       if (json.success && json.data) {
@@ -1274,6 +1433,7 @@ const App: React.FC = () => {
         if (currentPage === 'parts') setPartsData(json.data);
         if (currentPage === 'suppliers') setSupplierData(json.data);
         if (currentPage === 'performance') setPerformanceData(json.data);
+        if (currentPage === 'workshops') setWorkshopsData(json.data);
         setLastUpdated(new Date());
         setError(null);
       } else {
@@ -1285,12 +1445,18 @@ const App: React.FC = () => {
       setLoading(false);
       setCountdown(REFRESH_INTERVAL);
     }
-  }, [currentPage, selectedInsurer]);
+  }, [currentPage, selectedInsurer, dateRange]);
 
-  useEffect(() => { fetchInsurers(); }, [fetchInsurers]);
-  useEffect(() => { fetchCurrentPage(); }, [fetchCurrentPage]);
+  useEffect(() => { 
+    if (isAuthenticated) fetchInsurers(); 
+  }, [fetchInsurers, isAuthenticated]);
+  
+  useEffect(() => { 
+    if (isAuthenticated) fetchCurrentPage(); 
+  }, [fetchCurrentPage, isAuthenticated]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     const timer = setInterval(() => {
       setCountdown((p) => {
         if (p <= 1) { fetchCurrentPage(); return REFRESH_INTERVAL; }
@@ -1298,12 +1464,16 @@ const App: React.FC = () => {
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [fetchCurrentPage]);
+  }, [fetchCurrentPage, isAuthenticated]);
 
   const handleNavigate = (page: Page) => {
     setCurrentPage(page);
     setLoading(true);
   };
+
+  if (!isAuthenticated) {
+    return <LoginPage onLogin={() => setIsAuthenticated(true)} />;
+  }
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -1313,9 +1483,12 @@ const App: React.FC = () => {
         insurers={insurers}
         selectedInsurer={selectedInsurer}
         onInsurerChange={setSelectedInsurer}
+        dateRange={dateRange}
+        onDateChange={setDateRange}
         lastUpdated={lastUpdated}
         countdown={countdown}
         onRefresh={fetchCurrentPage}
+        onLogout={handleLogout}
         loading={loading}
       />
 
@@ -1330,10 +1503,11 @@ const App: React.FC = () => {
         {currentPage === 'parts' && <PartsAnalyticsPage data={partsData} loading={loading} />}
         {currentPage === 'suppliers' && <SupplierAnalyticsPage data={supplierData} loading={loading} />}
         {currentPage === 'performance' && <PerformanceAnalyticsPage data={performanceData} loading={loading} />}
+        {currentPage === 'workshops' && <WorkshopsAnalyticsPage data={workshopsData} loading={loading} />}
       </main>
 
       <footer className="max-w-7xl mx-auto px-4 py-4 text-center text-sm text-gray-400">
-        XNuuP Parts Dashboard v2.2
+        XNuuP Parts Dashboard v2.3
       </footer>
     </div>
   );
