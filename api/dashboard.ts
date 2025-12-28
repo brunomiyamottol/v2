@@ -1,8 +1,46 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { pool, buildInsurerFilter, formatResponse, formatError } from './_db';
+import { pool, formatResponse, formatError } from './_db';
 
-async function getClaimsSummary(insurerKey: number | null) {
-  const filter = buildInsurerFilter(insurerKey);
+interface FilterParams {
+  where: string;
+  params: any[];
+  dateJoin: string;
+}
+
+function buildFilters(insurerKey: number | null, startDate?: string, endDate?: string): FilterParams {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let paramIndex = 1;
+  let needsDateJoin = false;
+
+  if (insurerKey) {
+    conditions.push(`f.insurer_key = $${paramIndex}`);
+    params.push(insurerKey);
+    paramIndex++;
+  }
+
+  if (startDate) {
+    conditions.push(`od.full_date >= $${paramIndex}`);
+    params.push(startDate);
+    paramIndex++;
+    needsDateJoin = true;
+  }
+
+  if (endDate) {
+    conditions.push(`od.full_date <= $${paramIndex}`);
+    params.push(endDate);
+    paramIndex++;
+    needsDateJoin = true;
+  }
+
+  return {
+    where: conditions.length > 0 ? ' AND ' + conditions.join(' AND ') : '',
+    params,
+    dateJoin: needsDateJoin ? 'LEFT JOIN dw.dim_date od ON f.order_date_key = od.date_key' : '',
+  };
+}
+
+async function getClaimsSummary(filter: FilterParams) {
   const sql = `
     SELECT 
       COUNT(DISTINCT f.claim_key)::int as total_claims,
@@ -11,20 +49,21 @@ async function getClaimsSummary(insurerKey: number | null) {
       ROUND(AVG(f.current_price)::numeric, 2)::float as avg_part_price,
       ROUND(COUNT(*)::numeric / NULLIF(COUNT(DISTINCT f.claim_key), 0), 2)::float as avg_parts_per_claim
     FROM dw.fact_part_order f
+    ${filter.dateJoin}
     WHERE 1=1 ${filter.where}
   `;
   const result = await pool.query(sql, filter.params);
   return result.rows[0] || null;
 }
 
-async function getPartsDistribution(insurerKey: number | null) {
-  const filter = buildInsurerFilter(insurerKey);
+async function getPartsDistribution(filter: FilterParams) {
   const sql = `
     WITH claim_parts AS (
-      SELECT claim_key, COUNT(*) as part_count
+      SELECT f.claim_key, COUNT(*) as part_count
       FROM dw.fact_part_order f
-      WHERE claim_key IS NOT NULL ${filter.where}
-      GROUP BY claim_key
+      ${filter.dateJoin}
+      WHERE f.claim_key IS NOT NULL ${filter.where}
+      GROUP BY f.claim_key
     )
     SELECT 
       CASE 
@@ -50,8 +89,7 @@ async function getPartsDistribution(insurerKey: number | null) {
   return result.rows;
 }
 
-async function getStatusBreakdown(insurerKey: number | null) {
-  const filter = buildInsurerFilter(insurerKey);
+async function getStatusBreakdown(filter: FilterParams) {
   const sql = `
     SELECT 
       s.status_code::text,
@@ -62,6 +100,7 @@ async function getStatusBreakdown(insurerKey: number | null) {
       ROUND(COUNT(*)::numeric * 100 / NULLIF(SUM(COUNT(*)) OVER(), 0), 2)::float as pct_of_total,
       COALESCE(SUM(f.current_price), 0)::float as total_value
     FROM dw.fact_part_order f
+    ${filter.dateJoin}
     LEFT JOIN dw.dim_status s ON f.status_key = s.status_key
     WHERE 1=1 ${filter.where}
     GROUP BY s.status_code, s.status_name_es, s.status_name_en, s.status_category
@@ -71,8 +110,7 @@ async function getStatusBreakdown(insurerKey: number | null) {
   return result.rows;
 }
 
-async function getClaimFulfillment(insurerKey: number | null) {
-  const filter = buildInsurerFilter(insurerKey);
+async function getClaimFulfillment(filter: FilterParams) {
   const sql = `
     WITH claim_status AS (
       SELECT 
@@ -80,6 +118,7 @@ async function getClaimFulfillment(insurerKey: number | null) {
         COUNT(*) as total_parts,
         COUNT(*) FILTER (WHERE s.status_category = 'Complete') as delivered_parts
       FROM dw.fact_part_order f
+      ${filter.dateJoin}
       LEFT JOIN dw.dim_status s ON f.status_key = s.status_key
       WHERE f.claim_key IS NOT NULL ${filter.where}
       GROUP BY f.claim_key
@@ -99,8 +138,7 @@ async function getClaimFulfillment(insurerKey: number | null) {
   return result.rows[0] || null;
 }
 
-async function getSupplierPerformance(insurerKey: number | null, limit = 10) {
-  const filter = buildInsurerFilter(insurerKey);
+async function getSupplierPerformance(filter: FilterParams, limit = 10) {
   const sql = `
     SELECT 
       COALESCE(sp.supplier_guid, 'Unknown')::text as supplier_guid,
@@ -113,6 +151,7 @@ async function getSupplierPerformance(insurerKey: number | null, limit = 10) {
       )::float as delivery_rate,
       COALESCE(SUM(f.current_price), 0)::float as total_value
     FROM dw.fact_part_order f
+    ${filter.dateJoin}
     LEFT JOIN dw.dim_supplier sp ON f.supplier_key = sp.supplier_key
     LEFT JOIN dw.dim_status s ON f.status_key = s.status_key
     WHERE f.supplier_key IS NOT NULL ${filter.where}
@@ -124,8 +163,7 @@ async function getSupplierPerformance(insurerKey: number | null, limit = 10) {
   return result.rows;
 }
 
-async function getVehicleStats(insurerKey: number | null, limit = 10) {
-  const filter = buildInsurerFilter(insurerKey);
+async function getVehicleStats(filter: FilterParams, limit = 10) {
   const sql = `
     SELECT 
       COALESCE(v.manufacturer_name, 'Unknown')::text as marca,
@@ -139,6 +177,7 @@ async function getVehicleStats(insurerKey: number | null, limit = 10) {
       )::float as delivery_rate,
       COALESCE(SUM(f.current_price), 0)::float as total_value
     FROM dw.fact_part_order f
+    ${filter.dateJoin}
     LEFT JOIN dw.dim_vehicle v ON f.vehicle_key = v.vehicle_key
     LEFT JOIN dw.dim_status s ON f.status_key = s.status_key
     WHERE f.vehicle_key IS NOT NULL ${filter.where}
@@ -150,8 +189,7 @@ async function getVehicleStats(insurerKey: number | null, limit = 10) {
   return result.rows;
 }
 
-async function getInsurerPerformance(insurerKey: number | null, limit = 10) {
-  const filter = buildInsurerFilter(insurerKey);
+async function getInsurerPerformance(filter: FilterParams, limit = 10) {
   const sql = `
     SELECT 
       COALESCE(i.insurer_name, 'Unknown')::text as insurer_name,
@@ -164,6 +202,7 @@ async function getInsurerPerformance(insurerKey: number | null, limit = 10) {
       COALESCE(SUM(f.current_price), 0)::float as total_value,
       COUNT(DISTINCT f.workshop_key)::int as unique_workshops
     FROM dw.fact_part_order f
+    ${filter.dateJoin}
     LEFT JOIN dw.dim_insurer i ON f.insurer_key = i.insurer_key
     LEFT JOIN dw.dim_status s ON f.status_key = s.status_key
     WHERE f.insurer_key IS NOT NULL ${filter.where}
@@ -181,23 +220,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const insurerKey = req.query.insurer ? parseInt(req.query.insurer as string, 10) : null;
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  
+  const filter = buildFilters(insurerKey, startDate, endDate);
 
   try {
     const [
       claims_summary, parts_distribution, status_breakdown, claim_fulfillment,
       supplier_performance, vehicle_stats, insurer_performance,
     ] = await Promise.all([
-      getClaimsSummary(insurerKey),
-      getPartsDistribution(insurerKey),
-      getStatusBreakdown(insurerKey),
-      getClaimFulfillment(insurerKey),
-      getSupplierPerformance(insurerKey, 10),
-      getVehicleStats(insurerKey, 10),
-      getInsurerPerformance(insurerKey, 10),
+      getClaimsSummary(filter),
+      getPartsDistribution(filter),
+      getStatusBreakdown(filter),
+      getClaimFulfillment(filter),
+      getSupplierPerformance(filter, 10),
+      getVehicleStats(filter, 10),
+      getInsurerPerformance(filter, 10),
     ]);
 
     res.json(formatResponse({
       insurer_filter: insurerKey,
+      date_filter: { startDate, endDate },
       claims_summary, parts_distribution, status_breakdown, claim_fulfillment,
       supplier_performance, vehicle_stats, insurer_performance,
     }));
