@@ -128,9 +128,9 @@ async function getVehicleStats(insurerKey: number | null, limit = 10) {
   const filter = buildInsurerFilter(insurerKey);
   const sql = `
     SELECT 
-      COALESCE(v.marca, 'Unknown')::text as marca,
-      COALESCE(v.modelo, 'Unknown')::text as modelo,
-      v.año::int,
+      COALESCE(v.manufacturer_name, 'Unknown')::text as marca,
+      COALESCE(v.model_name, 'Unknown')::text as modelo,
+      v.year::int as año,
       COUNT(*)::int as total_parts,
       COUNT(DISTINCT f.claim_key)::int as total_claims,
       ROUND(
@@ -142,7 +142,7 @@ async function getVehicleStats(insurerKey: number | null, limit = 10) {
     LEFT JOIN dw.dim_vehicle v ON f.vehicle_key = v.vehicle_key
     LEFT JOIN dw.dim_status s ON f.status_key = s.status_key
     WHERE f.vehicle_key IS NOT NULL ${filter.where}
-    GROUP BY v.marca, v.modelo, v.año
+    GROUP BY v.manufacturer_name, v.model_name, v.year
     ORDER BY COUNT(DISTINCT f.claim_key) DESC
     LIMIT $${filter.params.length + 1}
   `;
