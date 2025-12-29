@@ -1,13 +1,22 @@
 import { Pool } from 'pg';
 
+// const pool = new Pool({
+//   host: process.env.DB_HOST || 'localhost',
+//   port: parseInt(process.env.DB_PORT || '5432', 10),
+//   database: process.env.DB_NAME || 'xnuup_dw',
+//   user: process.env.DB_USER || 'postgres',
+//   password: process.env.DB_PASSWORD || '',
+//   ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+// });
+
+// Connection pool for serverless - use connection string from environment
 const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  database: process.env.DB_NAME || 'xnuup_dw',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '',
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+  max: 1, // Limit connections for serverless
 });
+
+export { pool };
 
 const schema = process.env.DB_SCHEMA || 'dw';
 
