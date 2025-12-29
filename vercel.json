@@ -9,7 +9,7 @@
     }
   },
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/:path*" },
-    { "source": "/(.*)", "destination": "/" }
+    { "source": "/api/claims/:claimKey", "destination": "/api/claims/[claimKey]" },
+    { "source": "/api/orders/:orderKey", "destination": "/api/orders/[orderKey]" }
   ]
 }
