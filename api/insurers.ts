@@ -1,21 +1,21 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { pool, formatError } from './_db';
+import { query } from './_db';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json(formatError('Method not allowed'));
-  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const result = await pool.query(`
-      SELECT insurer_key, insurer_name 
-      FROM dw.dim_insurer 
-      WHERE insurer_name IS NOT NULL 
-      ORDER BY insurer_name
-    `);
+    const result = await query(
+      'SELECT DISTINCT i.insurer_key, i.insurer_name FROM dw.dim_insurer i ' +
+      'INNER JOIN dw.fact_part_order f ON f.insurer_key = i.insurer_key ' +
+      'WHERE i.insurer_name IS NOT NULL ORDER BY i.insurer_name'
+    );
     res.json({ success: true, data: result.rows, error: null });
-  } catch (error: any) {
-    console.error('[Insurers] Error:', error.message);
-    res.status(500).json(formatError(error.message));
+  } catch (e: any) {
+    res.status(500).json({ success: false, data: null, error: e.message });
   }
 }

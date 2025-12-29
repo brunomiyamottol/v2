@@ -8,34 +8,23 @@ function generateToken(password: string): string {
 }
 
 function verifyToken(token: string): boolean {
-  // Simple token validation - in production use JWT
-  return token && token.length === 64;
+  return !!token && token.length === 64;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
   if (req.method === 'POST') {
-    // Login
     const { password } = req.body || {};
-    
     if (password === DASHBOARD_PASSWORD) {
-      const token = generateToken(password);
-      return res.json({ success: true, token });
+      return res.json({ success: true, token: generateToken(password) });
     }
-    
     return res.status(401).json({ success: false, error: 'Invalid password' });
   }
-  
-  if (req.method === 'GET') {
-    // Verify token
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.replace('Bearer ', '');
-    
-    if (token && verifyToken(token)) {
-      return res.json({ valid: true });
-    }
-    
-    return res.json({ valid: false });
-  }
-  
-  return res.status(405).json({ error: 'Method not allowed' });
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  return res.json({ valid: token ? verifyToken(token) : false });
 }
