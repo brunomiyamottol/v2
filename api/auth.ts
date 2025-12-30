@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'crypto';
 
-const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'xnuup2024';
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'xnuup@2024';
 
 function generateToken(password: string): string {
   return crypto.createHash('sha256').update(password + Date.now().toString()).digest('hex');
