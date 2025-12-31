@@ -26,7 +26,7 @@ async function getSupplierRanking(insurerKey: number | null, limit = 20) {
     'LEFT JOIN dw.dim_date od ON f.order_date_key = od.date_key ' +
     'LEFT JOIN dw.dim_date dd ON f.delivery_date_key = dd.date_key ' +
     'WHERE f.supplier_key IS NOT NULL ' + filter.where +
-    'GROUP BY sp.supplier_guid, sp.supplier_name ORDER BY COUNT(*) DESC LIMIT $' + (filter.params.length + 1);
+    ' GROUP BY sp.supplier_guid, sp.supplier_name ORDER BY COUNT(*) DESC LIMIT $' + (filter.params.length + 1);
   return (await query(sql, [...filter.params, limit])).rows;
 }
 
