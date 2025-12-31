@@ -4,15 +4,29 @@ import { query, buildInsurerFilter } from '../_db';
 async function getSupplierRanking(insurerKey: number | null, limit = 20) {
   const filter = buildInsurerFilter(insurerKey);
   const sql = 'SELECT COALESCE(sp.supplier_guid, \'Unknown\')::text as supplier_guid, ' +
-    'COALESCE(sp.supplier_name, \'Unknown\')::text as supplier_name, sp.supplier_score::float, ' +
+    'COALESCE(sp.supplier_name, \'Unknown\')::text as supplier_name, ' +
     'COUNT(*)::int as total_orders, COUNT(DISTINCT f.claim_key)::int as unique_claims, ' +
     'COUNT(DISTINCT f.workshop_key)::int as unique_workshops, COUNT(DISTINCT f.part_key)::int as unique_parts, ' +
     'COALESCE(SUM(f.current_price), 0)::float as total_value, ROUND(AVG(f.current_price)::numeric, 2)::float as avg_price, ' +
     'ROUND(COUNT(*) FILTER (WHERE s.status_category = \'Complete\')::numeric * 100 / NULLIF(COUNT(*), 0), 2)::float as delivery_rate, ' +
-    'ROUND(COUNT(*) FILTER (WHERE s.status_category = \'Cancelled\')::numeric * 100 / NULLIF(COUNT(*), 0), 2)::float as cancel_rate ' +
+    'ROUND(COUNT(*) FILTER (WHERE s.status_category = \'Cancelled\')::numeric * 100 / NULLIF(COUNT(*), 0), 2)::float as cancel_rate, ' +
+    'ROUND(AVG(dd.full_date - od.full_date) FILTER (WHERE s.status_category = \'Complete\' AND dd.full_date IS NOT NULL AND od.full_date IS NOT NULL)::numeric, 1)::float as avg_delivery_days, ' +
+    'ROUND(GREATEST(0, LEAST(100, ' +
+      '(COUNT(*) FILTER (WHERE s.status_category = \'Complete\')::numeric * 100 / NULLIF(COUNT(*), 0)) * 0.5 + ' +
+      '(100 - COALESCE(COUNT(*) FILTER (WHERE s.status_category = \'Cancelled\')::numeric * 100 / NULLIF(COUNT(*), 0), 0)) * 0.3 + ' +
+      'CASE WHEN AVG(dd.full_date - od.full_date) FILTER (WHERE s.status_category = \'Complete\') IS NULL THEN 50 ' +
+        'WHEN AVG(dd.full_date - od.full_date) FILTER (WHERE s.status_category = \'Complete\') <= 1 THEN 100 ' +
+        'WHEN AVG(dd.full_date - od.full_date) FILTER (WHERE s.status_category = \'Complete\') <= 3 THEN 80 ' +
+        'WHEN AVG(dd.full_date - od.full_date) FILTER (WHERE s.status_category = \'Complete\') <= 5 THEN 60 ' +
+        'WHEN AVG(dd.full_date - od.full_date) FILTER (WHERE s.status_category = \'Complete\') <= 7 THEN 40 ' +
+        'ELSE 20 END * 0.2 ' +
+    '))::numeric, 1)::float as supplier_score ' +
     'FROM dw.fact_part_order f LEFT JOIN dw.dim_supplier sp ON f.supplier_key = sp.supplier_key ' +
-    'LEFT JOIN dw.dim_status s ON f.status_key = s.status_key WHERE f.supplier_key IS NOT NULL ' + filter.where +
-    ' GROUP BY sp.supplier_guid, sp.supplier_name, sp.supplier_score ORDER BY COUNT(*) DESC LIMIT $' + (filter.params.length + 1);
+    'LEFT JOIN dw.dim_status s ON f.status_key = s.status_key ' +
+    'LEFT JOIN dw.dim_date od ON f.order_date_key = od.date_key ' +
+    'LEFT JOIN dw.dim_date dd ON f.delivery_date_key = dd.date_key ' +
+    'WHERE f.supplier_key IS NOT NULL ' + filter.where +
+    'GROUP BY sp.supplier_guid, sp.supplier_name ORDER BY COUNT(*) DESC LIMIT $' + (filter.params.length + 1);
   return (await query(sql, [...filter.params, limit])).rows;
 }
 
